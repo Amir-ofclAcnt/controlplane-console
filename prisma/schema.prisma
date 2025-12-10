@@ -70,6 +70,7 @@ model Organization {
   name      String
   slug      String   @unique
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   auditLogs AuditLog[]
   members   OrgMember[]
