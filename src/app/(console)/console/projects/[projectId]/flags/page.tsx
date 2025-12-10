@@ -1,4 +1,5 @@
 import Link from "next/link";
+import FlagsClient from "./FlagsClient";
 
 export const runtime = "nodejs";
 
@@ -18,16 +19,16 @@ export default async function ProjectFlagsPage({
         </p>
       </div>
 
-      <Link
-        href={`/console/projects/${projectId}`}
-        className="inline-block rounded border px-3 py-2 text-sm hover:bg-muted"
-      >
-        Back to Project
-      </Link>
-
-      <div className="rounded-xl border p-4 text-sm text-muted-foreground">
-        Flags UI coming next.
+      <div className="flex gap-2">
+        <Link
+          href={`/console/projects/${projectId}`}
+          className="inline-block rounded border px-3 py-2 text-sm hover:bg-muted"
+        >
+          Back to Project
+        </Link>
       </div>
+
+      <FlagsClient projectId={projectId} />
     </div>
   );
 }

@@ -70,7 +70,7 @@ model Organization {
   name      String
   slug      String   @unique
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
 
   auditLogs AuditLog[]
   members   OrgMember[]
@@ -250,6 +250,11 @@ enum FlagKind {
   JSON
 }
 
+enum FlagLifecycle {
+  ACTIVE
+  ARCHIVED
+}
+
 model FeatureFlag {
   id        String @id @default(cuid())
   projectId String
@@ -258,7 +263,8 @@ model FeatureFlag {
   key         String
   name        String
   description String?
-  kind        FlagKind @default(BOOLEAN)
+  kind        FlagKind      @default(BOOLEAN)
+  lifecycle   FlagLifecycle @default(ACTIVE)
 
   archivedAt DateTime?
   createdAt  DateTime  @default(now())
@@ -270,7 +276,7 @@ model FeatureFlag {
   envStates  FlagEnvironmentState[]
 
   @@unique([projectId, key])
-  @@index([projectId])
+  @@index([projectId, createdAt])
 }
 
 model FlagVariation {
@@ -371,5 +377,3 @@ model ConfigSnapshot {
   @@unique([environmentId, contentSha256])
   @@index([environmentId, status])
 }
-
-
