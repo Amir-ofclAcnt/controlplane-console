@@ -2,9 +2,12 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireApiKey } from "@/lib/apiKeyAuth";
 import { z } from "zod";
-import { Prisma } from "@prisma/client";
 
 export const runtime = "nodejs";
+
+type InputJson = Parameters<
+  typeof prisma.event.create
+>[0]["data"]["payloadJson"];
 
 const EventSchema = z
   .object({
@@ -33,7 +36,7 @@ export async function POST(req: Request) {
   const { apiKey } = auth;
 
   // Cast to Prisma JSON input type (Zod passthrough uses `unknown`)
-  const payloadJson = parsed.data as unknown as Prisma.InputJsonValue;
+  const payloadJson = parsed.data as unknown as InputJson;
 
   try {
     await prisma.event.create({
