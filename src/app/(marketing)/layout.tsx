@@ -7,7 +7,7 @@ export default function MarketingLayout({ children }: { children: ReactNode }) {
     <div className="min-h-screen">
       <header className="border-b">
         <div className="mx-auto flex max-w-6xl items-center justify-between p-4">
-          <div className="font-semibold">Control Plane Console</div>
+          <div className="font-semibold">Control-Plane Console</div>
         </div>
       </header>
 
