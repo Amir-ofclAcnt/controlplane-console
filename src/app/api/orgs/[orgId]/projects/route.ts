@@ -6,6 +6,9 @@ import { z } from "zod";
 
 export const runtime = "nodejs";
 
+type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
+
 const CreateProjectSchema = z.object({
   name: z.string().min(2).max(80),
 });
@@ -81,7 +84,7 @@ export async function POST(
       : `proj-${Date.now()}`;
 
     // Transaction: create project + envs + audit entries
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx: Tx) => {
       const project = await tx.project.create({
         data: {
           organizationId: orgId,
