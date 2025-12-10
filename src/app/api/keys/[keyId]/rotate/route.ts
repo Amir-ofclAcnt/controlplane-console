@@ -7,6 +7,8 @@ import { z } from "zod";
 
 export const runtime = "nodejs";
 
+type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
 const RotateSchema = z.object({
   revokeOld: z.boolean().optional().default(true),
   name: z.string().min(2).max(80).optional(), // optional new key name
@@ -27,7 +29,8 @@ export async function POST(
 
   const session = await getServerSession(authOptions);
   const userId = session?.userId;
-  if (!userId) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!userId)
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
   const parsed = RotateSchema.safeParse(body);
@@ -50,23 +53,28 @@ export async function POST(
       project: { select: { organizationId: true } },
     },
   });
-  if (!oldKey) return NextResponse.json({ error: "not_found" }, { status: 404 });
+  if (!oldKey)
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
 
   const member = await prisma.orgMember.findFirst({
     where: { organizationId: oldKey.project.organizationId, userId },
     select: { role: true },
   });
-  if (!member) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (!member)
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   if (!oldKey.environmentId) {
-    return NextResponse.json({ error: "key_missing_environment" }, { status: 400 });
+    return NextResponse.json(
+      { error: "key_missing_environment" },
+      { status: 400 }
+    );
   }
 
   const prefix = `cp_${randomToken(6)}`;
   const secret = `cpk_${randomToken(24)}`;
   const hash = sha256(secret);
 
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx: Tx) => {
     const newKey = await tx.apiKey.create({
       data: {
         projectId: oldKey.projectId,
