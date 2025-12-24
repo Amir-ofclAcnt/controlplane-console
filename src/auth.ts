@@ -1,8 +1,11 @@
 import type { NextAuthOptions } from "next-auth";
+import { getServerSession } from "next-auth";
 import GitHubProvider from "next-auth/providers/github";
+import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/db";
 
 export const authOptions: NextAuthOptions = {
+  adapter: PrismaAdapter(prisma),
   secret: process.env.NEXTAUTH_SECRET,
   session: { strategy: "jwt" },
   providers: [
@@ -28,13 +31,20 @@ export const authOptions: NextAuthOptions = {
           },
           select: { id: true },
         });
+
         token.userId = dbUser.id;
       }
       return token;
     },
+
     async session({ session, token }) {
       if (token.userId) session.userId = token.userId;
       return session;
     },
   },
 };
+
+// ✅ Unified server-side session getter for App Router
+export function auth() {
+  return getServerSession(authOptions);
+}

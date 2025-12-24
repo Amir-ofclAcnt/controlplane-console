@@ -160,8 +160,9 @@ model ApiKey {
 
   createdBy User? @relation("ApiKeyCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
-  requestLogs RequestLog[]
-  events      Event[]
+  requestLogs       RequestLog[]
+  events            Event[]
+  rateLimitCounters RateLimitCounter[]
 
   @@unique([projectId, prefix])
   @@index([projectId])
@@ -175,8 +176,9 @@ model RequestLog {
 
   // Migration 1: optional; later make required if you want strict env filtering
   environmentId String?
+  apiKeyId      String?
+  requestId     String? @db.Uuid
 
-  apiKeyId  String?
   method    String
   path      String
   status    Int
@@ -201,16 +203,20 @@ model Event {
   environmentId String?
   apiKeyId      String?
 
-  // Your event schema can evolve; store raw JSON plus a few searchable fields
+  // NEW: client-provided stable id for idempotency (UUID)
+  eventId String? @db.Uuid
+
   type        String?
   payloadJson Json
-
-  receivedAt DateTime @default(now())
+  receivedAt  DateTime @default(now())
 
   project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   environment Environment? @relation(fields: [environmentId], references: [id], onDelete: SetNull)
   apiKey      ApiKey?      @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
 
+  // NEW: idempotency/dedupe (works when both values are non-null)
+  @@unique([environmentId, eventId])
+  // Existing indexes
   @@index([projectId, receivedAt])
   @@index([environmentId, receivedAt])
   @@index([apiKeyId, receivedAt])
@@ -376,4 +382,38 @@ model ConfigSnapshot {
   @@unique([environmentId, version])
   @@unique([environmentId, contentSha256])
   @@index([environmentId, status])
+}
+
+model RateLimitCounter {
+  id          String   @id @default(cuid())
+  apiKeyId    String
+  windowStart DateTime
+  count       Int      @default(0)
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@unique([apiKeyId, windowStart])
+  @@index([apiKeyId, windowStart])
+}
+
+model UsageBucket {
+  id            String   @id @default(cuid())
+  projectId     String
+  environmentId String
+  scopeKey      String
+  bucketStart   DateTime
+
+  eventsIngested Int @default(0)
+  requests202    Int @default(0)
+  requests4xx    Int @default(0)
+  requests5xx    Int @default(0)
+
+  latencySumMs Int @default(0)
+  latencyCount Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, environmentId, scopeKey, bucketStart], name: "project_env_scope_bucket")
+  @@index([projectId, environmentId, bucketStart])
 }
