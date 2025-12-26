@@ -55,7 +55,7 @@ export default async function ProjectUsagePage({
   const range = sp.range ?? "24h"; // default
 
   const h = await headers();
-  const host = h.get("host");
+  const host = h.get("host") ?? "localhost:3000";
   if (!host) throw new Error("Missing Host header");
 
   const proto = h.get("x-forwarded-proto") ?? "http";
@@ -198,6 +198,7 @@ export default async function ProjectUsagePage({
             Last 24 completed hours (UTC bucket boundaries).
           </CardDescription>
         </CardHeader>
+        <UsageChart buckets={data.buckets} />
         <CardContent>
           {data.buckets.length === 0 ? (
             <p className="text-sm text-muted-foreground">No usage data yet.</p>

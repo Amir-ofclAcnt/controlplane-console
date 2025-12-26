@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
+import type { ReactNode } from "react";
 
 import { prisma } from "@/lib/db";
 import { auth } from "@/auth";
@@ -20,20 +21,24 @@ import { Button } from "@/components/ui/button";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type LogsResponse = {
+type AuditResponse = {
   projectId: string;
+  organizationId: string;
   items: Array<{
     id: string;
     createdAt: string;
-    requestId: string;
-    method: string;
-    path: string;
-    status: number;
-    latencyMs: number;
-    environmentId: string | null;
-    apiKeyId: string | null;
-    ip: string | null;
-    userAgent: string | null;
+    organizationId: string;
+    actorUserId: string | null;
+    action: string;
+    targetType: string;
+    targetId: string;
+    metaJson: unknown | null;
+    actor: {
+      id: string;
+      name: string | null;
+      email: string | null;
+      image: string | null;
+    } | null;
   }>;
   nextCursor: string | null;
 };
@@ -49,14 +54,6 @@ function fmtTime(iso: string) {
   });
 }
 
-function statusBadgeVariant(
-  status: number
-): "default" | "outline" | "secondary" | "destructive" {
-  if (status >= 500) return "destructive";
-  if (status >= 400) return "secondary";
-  return "outline";
-}
-
 function Select({
   name,
   defaultValue,
@@ -64,7 +61,7 @@ function Select({
 }: {
   name: string;
   defaultValue?: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <select
@@ -77,7 +74,17 @@ function Select({
   );
 }
 
-export default async function ProjectLogsPage({
+function compactJson(v: unknown) {
+  try {
+    const s = JSON.stringify(v);
+    if (!s) return "";
+    return s.length > 120 ? s.slice(0, 117) + "..." : s;
+  } catch {
+    return "";
+  }
+}
+
+export default async function ProjectAuditPage({
   params,
   searchParams,
 }: {
@@ -85,16 +92,17 @@ export default async function ProjectLogsPage({
   searchParams?: Promise<{
     cursor?: string;
     take?: string;
-    environmentId?: string;
-    apiKeyId?: string;
-    status?: string;
+    actorUserId?: string;
+    action?: string;
+    targetType?: string;
+    targetId?: string;
     q?: string;
   }>;
 }) {
   const { projectId } = await params;
   const sp = (await searchParams) ?? {};
 
-  // 0) Auth + membership gate for dropdown data
+  // 1) Gate page + find orgId
   const session = await auth();
   const userId = session?.userId;
   if (!userId) notFound();
@@ -104,54 +112,54 @@ export default async function ProjectLogsPage({
       id: projectId,
       organization: { members: { some: { userId } } },
     },
-    select: { id: true },
+    select: { id: true, organizationId: true },
   });
 
   if (!project) notFound();
 
-  // 1) Dropdown data
-  const environments = await prisma.environment.findMany({
-    where: { projectId },
-    orderBy: { createdAt: "asc" },
-    select: { id: true, name: true, slug: true },
+  // 2) Build "members" dropdown: OrgMember -> userIds -> Users
+  const orgMembers = await prisma.orgMember.findMany({
+    where: { organizationId: project.organizationId },
+    select: { userId: true },
+    orderBy: { userId: "asc" }, // safe + stable
   });
 
-  const apiKeys = await prisma.apiKey.findMany({
-    where: {
-      projectId,
-      revokedAt: null,
-      ...(sp.environmentId ? { environmentId: sp.environmentId } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true, name: true, prefix: true, environmentId: true },
-    take: 200,
-  });
+  const memberUserIds = Array.from(new Set(orgMembers.map((m) => m.userId)));
 
-  // 2) Build query string for API fetch (always set take)
-  const qs = new URLSearchParams();
-  qs.set("take", sp.take?.trim() ? sp.take : "50");
-  if (sp.cursor) qs.set("cursor", sp.cursor);
-  if (sp.environmentId) qs.set("environmentId", sp.environmentId);
-  if (sp.apiKeyId) qs.set("apiKeyId", sp.apiKeyId);
-  if (sp.status) qs.set("status", sp.status);
-  if (sp.q) qs.set("q", sp.q);
+  const memberUsers =
+    memberUserIds.length === 0
+      ? []
+      : await prisma.user.findMany({
+          where: { id: { in: memberUserIds } },
+          select: { id: true, name: true, email: true },
+          orderBy: [{ name: "asc" }, { email: "asc" }, { id: "asc" }],
+        });
 
   const h = await headers();
   const host = h.get("host");
   const proto = h.get("x-forwarded-proto") ?? "http";
   const cookie = h.get("cookie") ?? "";
 
+  // 3) Build querystring to API
+  const qs = new URLSearchParams();
+  qs.set("take", sp.take?.trim() ? sp.take : "50");
+  if (sp.cursor) qs.set("cursor", sp.cursor);
+  if (sp.actorUserId) qs.set("actorUserId", sp.actorUserId);
+  if (sp.action) qs.set("action", sp.action);
+  if (sp.targetType) qs.set("targetType", sp.targetType);
+  if (sp.targetId) qs.set("targetId", sp.targetId);
+  if (sp.q) qs.set("q", sp.q);
+
   const res = await fetch(
-    `${proto}://${host}/api/projects/${projectId}/logs?${qs.toString()}`,
+    `${proto}://${host}/api/projects/${projectId}/audit?${qs.toString()}`,
     { headers: { cookie }, cache: "no-store" }
   );
 
   if (res.status === 404) notFound();
-  if (!res.ok) throw new Error(`Failed to load logs: ${res.status}`);
+  if (!res.ok) throw new Error(`Failed to load audit: ${res.status}`);
 
-  const data = (await res.json()) as LogsResponse;
+  const data = (await res.json()) as AuditResponse;
 
-  // 3) Build "next" query string (same filters + next cursor)
   const nextQs = new URLSearchParams(qs);
   if (data.nextCursor) nextQs.set("cursor", data.nextCursor);
 
@@ -160,10 +168,9 @@ export default async function ProjectLogsPage({
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Logs</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Audit</h1>
             <p className="text-sm text-muted-foreground">
-              Request logs for <code className="text-xs">/v1/events</code> and
-              console APIs.
+              Organization audit events (scoped by this project’s org).
             </p>
           </div>
 
@@ -178,14 +185,14 @@ export default async function ProjectLogsPage({
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <Badge variant="outline">Newest first</Badge>
           <Badge variant="outline">Cursor pagination</Badge>
-          {sp.status ? (
-            <Badge variant="outline">Status: {sp.status}</Badge>
+          {sp.actorUserId ? (
+            <Badge variant="outline">Actor: {sp.actorUserId}</Badge>
           ) : null}
-          {sp.environmentId ? (
-            <Badge variant="outline">Env: {sp.environmentId}</Badge>
+          {sp.action ? (
+            <Badge variant="outline">Action: {sp.action}</Badge>
           ) : null}
-          {sp.apiKeyId ? (
-            <Badge variant="outline">Key: {sp.apiKeyId}</Badge>
+          {sp.targetType ? (
+            <Badge variant="outline">Target: {sp.targetType}</Badge>
           ) : null}
           {sp.q ? <Badge variant="outline">Search: {sp.q}</Badge> : null}
         </div>
@@ -193,62 +200,55 @@ export default async function ProjectLogsPage({
 
       <Card>
         <CardHeader>
-          <CardTitle>Recent requests</CardTitle>
+          <CardTitle>Audit events</CardTitle>
           <CardDescription>
-            Showing {data.items.length} row(s). Filter by env/key/status/search.
+            Showing {data.items.length} row(s). Filter by
+            actor/action/target/search.
           </CardDescription>
         </CardHeader>
 
         <CardContent>
-          {/* Filters: always render (even when there are 0 rows) */}
           <form className="grid gap-3 rounded-xl border p-4 md:grid-cols-6">
             <div className="grid gap-1 md:col-span-2">
               <Label className="text-xs">Search</Label>
               <Input
                 name="q"
                 defaultValue={sp.q ?? ""}
-                placeholder="requestId (uuid) or path/ip/ua..."
+                placeholder="action / targetType / targetId..."
                 className="h-9"
               />
             </div>
 
             <div className="grid gap-1">
-              <Label className="text-xs">Status</Label>
+              <Label className="text-xs">Actor</Label>
+              <Select name="actorUserId" defaultValue={sp.actorUserId ?? ""}>
+                <option value="">All</option>
+                {memberUsers.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name ?? u.email ?? u.id}
+                  </option>
+                ))}
+              </Select>
+            </div>
+
+            <div className="grid gap-1">
+              <Label className="text-xs">Action (exact)</Label>
               <Input
-                name="status"
-                defaultValue={sp.status ?? ""}
-                placeholder="202, 429, 500..."
+                name="action"
+                defaultValue={sp.action ?? ""}
+                placeholder="api_key.created"
                 className="h-9"
               />
             </div>
 
             <div className="grid gap-1">
-              <Label className="text-xs">Environment</Label>
-              <Select
-                name="environmentId"
-                defaultValue={sp.environmentId ?? ""}
-              >
-                <option value="">All environments</option>
-                {environments.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name}
-                    {e.slug ? ` (${e.slug})` : ""}
-                  </option>
-                ))}
-              </Select>
-            </div>
-
-            <div className="grid gap-1">
-              <Label className="text-xs">API key</Label>
-              <Select name="apiKeyId" defaultValue={sp.apiKeyId ?? ""}>
-                <option value="">All keys</option>
-                {apiKeys.map((k) => (
-                  <option key={k.id} value={k.id}>
-                    {k.name} · {k.prefix}
-                    {k.environmentId ? "" : " · (no env)"}
-                  </option>
-                ))}
-              </Select>
+              <Label className="text-xs">Target type (exact)</Label>
+              <Input
+                name="targetType"
+                defaultValue={sp.targetType ?? ""}
+                placeholder="ApiKey / FeatureFlag"
+                className="h-9"
+              />
             </div>
 
             <div className="grid gap-1">
@@ -261,30 +261,42 @@ export default async function ProjectLogsPage({
               />
             </div>
 
+            <div className="grid gap-1 md:col-span-2">
+              <Label className="text-xs">Target id (exact)</Label>
+              <Input
+                name="targetId"
+                defaultValue={sp.targetId ?? ""}
+                placeholder="cuid..."
+                className="h-9"
+              />
+            </div>
+
             <div className="flex items-end gap-2 md:col-span-6">
               <Button type="submit" size="sm">
                 Apply
               </Button>
 
               <Button asChild type="button" variant="outline" size="sm">
-                <Link href={`/console/projects/${projectId}/logs`}>Reset</Link>
+                <Link href={`/console/projects/${projectId}/audit`}>Reset</Link>
               </Button>
             </div>
           </form>
 
           {data.items.length === 0 ? (
-            <p className="mt-4 text-sm text-muted-foreground">No logs yet.</p>
+            <p className="mt-4 text-sm text-muted-foreground">
+              No audit events yet.
+            </p>
           ) : (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
                     <th className="py-2 pr-4">Time</th>
-                    <th className="py-2 pr-4">Status</th>
-                    <th className="py-2 pr-4">Method</th>
-                    <th className="py-2 pr-4">Path</th>
-                    <th className="py-2 pr-4">Latency</th>
-                    <th className="py-2 pr-4">Request ID</th>
+                    <th className="py-2 pr-4">Actor</th>
+                    <th className="py-2 pr-4">Action</th>
+                    <th className="py-2 pr-4">Target</th>
+                    <th className="py-2 pr-4">Target ID</th>
+                    <th className="py-2 pr-4">Meta</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -294,17 +306,24 @@ export default async function ProjectLogsPage({
                         {fmtTime(r.createdAt)}
                       </td>
                       <td className="py-2 pr-4">
-                        <Badge variant={statusBadgeVariant(r.status)}>
-                          {r.status}
-                        </Badge>
+                        <div className="font-mono text-xs">
+                          {r.actor?.name ??
+                            r.actor?.email ??
+                            r.actorUserId ??
+                            "—"}
+                        </div>
                       </td>
                       <td className="py-2 pr-4 font-mono text-xs">
-                        {r.method}
+                        {r.action}
                       </td>
-                      <td className="py-2 pr-4 font-mono text-xs">{r.path}</td>
-                      <td className="py-2 pr-4">{r.latencyMs} ms</td>
                       <td className="py-2 pr-4 font-mono text-xs">
-                        {r.requestId}
+                        {r.targetType}
+                      </td>
+                      <td className="py-2 pr-4 font-mono text-xs">
+                        {r.targetId}
+                      </td>
+                      <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">
+                        {r.metaJson ? compactJson(r.metaJson) : "—"}
                       </td>
                     </tr>
                   ))}
@@ -317,7 +336,7 @@ export default async function ProjectLogsPage({
             {data.nextCursor ? (
               <Button asChild variant="outline" size="sm">
                 <Link
-                  href={`/console/projects/${projectId}/logs?${nextQs.toString()}`}
+                  href={`/console/projects/${projectId}/audit?${nextQs.toString()}`}
                 >
                   Load more
                 </Link>

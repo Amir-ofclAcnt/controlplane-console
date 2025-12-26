@@ -5,7 +5,13 @@ import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { sv } from "date-fns/locale";
 
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+  CardContent,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -126,7 +132,9 @@ export default async function ProjectOverviewPage({
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Active API keys</CardTitle>
+            <CardTitle className="text-sm font-medium">
+              Active API keys
+            </CardTitle>
             <KeyIcon className="h-4 w-4 opacity-70" />
           </CardHeader>
           <CardContent>
@@ -152,7 +160,9 @@ export default async function ProjectOverviewPage({
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Events ingested</CardTitle>
+            <CardTitle className="text-sm font-medium">
+              Events ingested
+            </CardTitle>
             <ActivityIcon className="h-4 w-4 opacity-70" />
           </CardHeader>
           <CardContent>
@@ -194,6 +204,12 @@ export default async function ProjectOverviewPage({
                 View logs
               </Link>
             </Button>
+            <Button asChild size="sm" variant="outline">
+              <Link href={`/console/projects/${projectId}/audit`}>
+                <ActivityIcon className="mr-2 h-4 w-4" />
+                Audit
+              </Link>
+            </Button>
           </CardContent>
         </Card>
 
@@ -209,7 +225,8 @@ export default async function ProjectOverviewPage({
             <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">
               Usage charts are coming next.
               <br />
-              You will be able to see events and flag evaluations over time here.
+              You will be able to see events and flag evaluations over time
+              here.
             </div>
           </CardContent>
         </Card>
@@ -221,7 +238,8 @@ export default async function ProjectOverviewPage({
           <div>
             <CardTitle>Recent events</CardTitle>
             <CardDescription>
-              Last few events ingested via <code className="text-xs">/v1/events</code>.
+              Last few events ingested via{" "}
+              <code className="text-xs">/v1/events</code>.
             </CardDescription>
           </div>
           <BarChart3Icon className="h-4 w-4 opacity-70" />
@@ -230,8 +248,8 @@ export default async function ProjectOverviewPage({
           {recentEvents.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No events yet. Send a test request with{" "}
-              <code className="text-xs">curl</code> using one of your API keys to
-              see activity here.
+              <code className="text-xs">curl</code> using one of your API keys
+              to see activity here.
             </p>
           ) : (
             <div className="space-y-3">

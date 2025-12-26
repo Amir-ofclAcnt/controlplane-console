@@ -15,24 +15,16 @@ const QuerySchema = z.object({
       if (!Number.isFinite(n)) return 50;
       return Math.max(1, Math.min(200, n));
     }),
-  cursor: z.string().optional(), // RequestLog.id
-  environmentId: z.string().optional(),
-  apiKeyId: z.string().optional(),
-  status: z
-    .string()
-    .optional()
-    .transform((v) => (v ? Number(v) : undefined))
-    .refine((v) => v === undefined || Number.isInteger(v), {
-      message: "status must be an integer",
-    })
-    .optional(),
-  q: z.string().optional(), // search (uuid requestId OR text fields)
+  cursor: z.string().optional(), // AuditLog.id
+  actorUserId: z.string().optional(),
+  action: z.string().optional(),
+  targetType: z.string().optional(),
+  targetId: z.string().optional(),
+  q: z.string().optional(), // search in action/targetType/targetId
 });
 
-function isUuid(v: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    v
-  );
+function iso(d: Date) {
+  return d.toISOString();
 }
 
 export async function GET(
@@ -48,13 +40,13 @@ export async function GET(
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  // 2) Authorization (org membership)
+  // 2) Authorization: user must belong to org that owns the project
   const project = await prisma.project.findFirst({
     where: {
       id: projectId,
       organization: { members: { some: { userId } } },
     },
-    select: { id: true },
+    select: { id: true, organizationId: true },
   });
 
   if (!project) {
@@ -66,9 +58,10 @@ export async function GET(
   const parsed = QuerySchema.safeParse({
     take: url.searchParams.get("take") ?? undefined,
     cursor: url.searchParams.get("cursor") ?? undefined,
-    environmentId: url.searchParams.get("environmentId") ?? undefined,
-    apiKeyId: url.searchParams.get("apiKeyId") ?? undefined,
-    status: url.searchParams.get("status") ?? undefined,
+    actorUserId: url.searchParams.get("actorUserId") ?? undefined,
+    action: url.searchParams.get("action") ?? undefined,
+    targetType: url.searchParams.get("targetType") ?? undefined,
+    targetId: url.searchParams.get("targetId") ?? undefined,
     q: url.searchParams.get("q") ?? undefined,
   });
 
@@ -79,36 +72,29 @@ export async function GET(
     );
   }
 
-  const { take, cursor, environmentId, apiKeyId, status, q } = parsed.data;
+  const { take, cursor, actorUserId, action, targetType, targetId, q } =
+    parsed.data;
 
-  // 4) Build filters
-  const where: Prisma.RequestLogWhereInput = {
-    projectId,
-    ...(environmentId ? { environmentId } : {}),
-    ...(apiKeyId ? { apiKeyId } : {}),
-    ...(typeof status === "number" ? { status } : {}),
+  // 4) Filters
+  const where: Prisma.AuditLogWhereInput = {
+    organizationId: project.organizationId,
+    ...(actorUserId ? { actorUserId } : {}),
+    ...(action ? { action } : {}),
+    ...(targetType ? { targetType } : {}),
+    ...(targetId ? { targetId } : {}),
   };
 
   if (q && q.trim()) {
     const needle = q.trim();
-
-    const OR: Prisma.RequestLogWhereInput[] = [
-      { path: { contains: needle, mode: "insensitive" } },
-      // Optional, but useful:
-      { ip: { contains: needle, mode: "insensitive" } },
-      { userAgent: { contains: needle, mode: "insensitive" } },
+    where.OR = [
+      { action: { contains: needle, mode: "insensitive" } },
+      { targetType: { contains: needle, mode: "insensitive" } },
+      { targetId: { contains: needle, mode: "insensitive" } },
     ];
-
-    // Only allow UUID exact match for requestId
-    if (isUuid(needle)) {
-      OR.unshift({ requestId: { equals: needle } });
-    }
-
-    where.OR = OR;
   }
 
-  // 5) Fetch + cursor pagination
-  const rows = await prisma.requestLog.findMany({
+  // 5) Cursor pagination (newest first)
+  const rows = await prisma.auditLog.findMany({
     where,
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: take + 1,
@@ -116,15 +102,20 @@ export async function GET(
     select: {
       id: true,
       createdAt: true,
-      requestId: true,
-      method: true,
-      path: true,
-      status: true,
-      latencyMs: true,
-      environmentId: true,
-      apiKeyId: true,
-      ip: true,
-      userAgent: true,
+      organizationId: true,
+      actorUserId: true,
+      action: true,
+      targetType: true,
+      targetId: true,
+      metaJson: true,
+      actor: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          image: true,
+        },
+      },
     },
   });
 
@@ -134,7 +125,11 @@ export async function GET(
 
   return NextResponse.json({
     projectId,
-    items,
+    organizationId: project.organizationId,
+    items: items.map((r) => ({
+      ...r,
+      createdAt: iso(r.createdAt),
+    })),
     nextCursor,
   });
 }

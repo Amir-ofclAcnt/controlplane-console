@@ -1,35 +1,45 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { prisma } from "@/lib/db";
+
 import { auth } from "@/auth";
+import { prisma } from "@/lib/db";
 
-import { KeyGenerator } from "./KeyGenerator";
-import { revokeApiKeyAction } from "./actions";
-
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
+import KeyGenerator from "./KeyGenerator";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-type ParamsPromise = Promise<{ projectId: string }>;
-
-export default async function ProjectKeysPage({ params }: { params: ParamsPromise }) {
+export default async function ProjectKeysPage({
+  params,
+}: {
+  params: Promise<{ projectId: string }>;
+}) {
   const { projectId } = await params;
 
   const session = await auth();
-  if (!session?.userId) notFound();
+  const userId = session?.userId;
+  if (!userId) notFound();
 
+  // Ensure user is a member of the org that owns the project
   const project = await prisma.project.findFirst({
     where: {
       id: projectId,
-      organization: { members: { some: { userId: session.userId } } },
+      organization: {
+        members: { some: { userId } },
+      },
     },
     select: {
       id: true,
       name: true,
       environments: {
-        select: { id: true, name: true, slug: true },
+        select: { id: true, name: true },
         orderBy: { createdAt: "asc" },
       },
     },
@@ -44,106 +54,44 @@ export default async function ProjectKeysPage({ params }: { params: ParamsPromis
       id: true,
       name: true,
       prefix: true,
-      environmentId: true,
-      revokedAt: true,
-      lastUsedAt: true,
       createdAt: true,
+      revokedAt: true,
+      environment: { select: { id: true, name: true } },
     },
   });
 
-  const envById = new Map(project.environments.map((e) => [e.id, e]));
-
   return (
-    <div className="flex flex-col gap-6">
-      {/* Header */}
-      <div className="space-y-2">
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">API Keys</h1>
+          <h1 className="text-2xl font-semibold">API Keys</h1>
           <p className="text-sm text-muted-foreground">
-            Generate keys for SDKs and ingestion endpoints. Keys are scoped to an environment.
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Project ID: <span className="font-mono">{project.id}</span>
+            Project: <span className="font-mono">{project.name}</span>
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Link
-            href={`/console/projects/${project.id}`}
-            className="inline-block rounded border px-3 py-2 text-sm hover:bg-muted"
-          >
-            Back to Project
-          </Link>
-
-          {/* Optional: show project name */}
-          <span className="text-sm text-muted-foreground">
-            Project: <span className="font-medium text-foreground">{project.name}</span>
-          </span>
-        </div>
+        <Link
+          href={`/console/projects/${projectId}`}
+          className="inline-block rounded border px-3 py-2 text-sm hover:bg-muted"
+        >
+          Back to Project
+        </Link>
       </div>
 
-      {/* Key generator */}
-      <KeyGenerator projectId={project.id} environments={project.environments} />
-
-      {/* Existing keys */}
       <Card>
         <CardHeader>
-          <CardTitle>Existing keys</CardTitle>
+          <CardTitle>Manage keys</CardTitle>
           <CardDescription>
-            Only the prefix is stored and displayed. The secret is shown only once at creation time.
+            Keys are shown by prefix only. The full secret is displayed once on
+            create/rotate.
           </CardDescription>
         </CardHeader>
-
-        <CardContent className="space-y-3">
-          {keys.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No keys yet.</p>
-          ) : (
-            <div className="space-y-2">
-              {keys.map((k) => {
-                const env = k.environmentId ? envById.get(k.environmentId) : null;
-                const revoked = Boolean(k.revokedAt);
-
-                return (
-                  <div key={k.id} className="flex items-center justify-between rounded-lg border p-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <div className="truncate font-medium">{k.name}</div>
-
-                        {revoked ? (
-                          <Badge variant="destructive">Revoked</Badge>
-                        ) : (
-                          <Badge variant="outline">Active</Badge>
-                        )}
-
-                        {env ? (
-                          <Badge variant="secondary">{env.name}</Badge>
-                        ) : (
-                          <Badge variant="outline">No env</Badge>
-                        )}
-                      </div>
-
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        Prefix: <code>{k.prefix}</code> · Created: {k.createdAt.toISOString().slice(0, 10)}
-                        {k.lastUsedAt ? ` · Last used: ${k.lastUsedAt.toISOString().slice(0, 10)}` : ""}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {!revoked ? (
-                        <form action={revokeApiKeyAction}>
-                          <input type="hidden" name="projectId" value={project.id} />
-                          <input type="hidden" name="apiKeyId" value={k.id} />
-                          <Button type="submit" variant="outline" size="sm">
-                            Revoke
-                          </Button>
-                        </form>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+        <CardContent>
+          <KeyGenerator
+            projectId={project.id}
+            environments={project.environments}
+            keys={keys}
+          />
         </CardContent>
       </Card>
     </div>

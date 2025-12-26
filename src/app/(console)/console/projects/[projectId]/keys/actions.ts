@@ -1,26 +1,30 @@
 "use server";
 
 import crypto from "crypto";
-import { z } from "zod";
 import { revalidatePath } from "next/cache";
-import { prisma } from "@/lib/db";
+
 import { auth } from "@/auth";
+import { prisma } from "@/lib/db";
 
 function sha256(input: string) {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
 
-const CreateSchema = z.object({
-  projectId: z.string().min(1),
-  environmentId: z.string().min(1),
-  name: z.string().min(1).max(80),
-});
+function makePrefix() {
+  // short stable prefix used for lookup/logging
+  return `cpk_${crypto.randomBytes(4).toString("hex")}`;
+}
 
-export type CreateApiKeyState =
-  | { ok: false; error: string; secret?: never }
-  | { ok: true; secret: string };
+function makeSecret() {
+  // long random part (never stored in plaintext)
+  return crypto.randomBytes(24).toString("hex");
+}
 
-async function requireProjectAccess(projectId: string, userId: string) {
+async function requireUserAndProjectAccess(projectId: string) {
+  const session = await auth();
+  const userId = session?.userId;
+  if (!userId) throw new Error("unauthorized");
+
   const project = await prisma.project.findFirst({
     where: {
       id: projectId,
@@ -29,99 +33,110 @@ async function requireProjectAccess(projectId: string, userId: string) {
     select: { id: true },
   });
 
-  if (!project) throw new Error("not_found_or_forbidden");
+  if (!project) throw new Error("not_found");
+  return { userId };
 }
 
-async function requireEnvironmentInProject(environmentId: string, projectId: string) {
+export async function createApiKeyAction(input: {
+  projectId: string;
+  environmentId: string;
+  name?: string;
+}) {
+  const { projectId, environmentId, name } = input;
+
+  await requireUserAndProjectAccess(projectId);
+
   const env = await prisma.environment.findFirst({
     where: { id: environmentId, projectId },
     select: { id: true },
   });
   if (!env) throw new Error("invalid_environment");
-}
 
-export async function createApiKeyAction(
-  _prev: CreateApiKeyState,
-  formData: FormData
-): Promise<CreateApiKeyState> {
-  const session = await auth();
-  const userId = session?.userId;
-  if (!userId) return { ok: false, error: "unauthorized" };
+  const prefix = makePrefix();
+  const secret = makeSecret();
+  const fullKey = `${prefix}_${secret}`;
+  const safeName = name?.trim() || "API Key";
 
-  const parsed = CreateSchema.safeParse({
-    projectId: formData.get("projectId"),
-    environmentId: formData.get("environmentId"),
-    name: formData.get("name"),
+  const created = await prisma.apiKey.create({
+    data: {
+      projectId,
+      environmentId,
+      name: safeName,
+      prefix,
+      hash: sha256(fullKey),
+      revokedAt: null,
+    },
+    select: { id: true },
   });
-
-  if (!parsed.success) {
-    return { ok: false, error: "invalid_request" };
-  }
-
-  const { projectId, environmentId, name } = parsed.data;
-
-  try {
-    await requireProjectAccess(projectId, userId);
-    await requireEnvironmentInProject(environmentId, projectId);
-
-    // Generate secret once. Store only hash + prefix.
-    const prefix = `cpk_${crypto.randomBytes(4).toString("hex")}`;
-    const secret = `${prefix}_${crypto.randomBytes(24).toString("hex")}`;
-    const hash = sha256(secret);
-
-    await prisma.apiKey.create({
-      data: {
-        projectId,
-        environmentId,
-        name,
-        prefix,
-        hash,
-        createdByUserId: userId,
-      },
-      select: { id: true },
-    });
-
-    revalidatePath(`/console/projects/${projectId}/keys`);
-    return { ok: true, secret };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "internal_error";
-    return { ok: false, error: msg };
-  }
-}
-
-const RevokeSchema = z.object({
-  projectId: z.string().min(1),
-  apiKeyId: z.string().min(1),
-});
-
-export async function revokeApiKeyAction(formData: FormData) {
-  const session = await auth();
-  const userId = session?.userId;
-  if (!userId) throw new Error("unauthorized");
-
-  const parsed = RevokeSchema.safeParse({
-    projectId: formData.get("projectId"),
-    apiKeyId: formData.get("apiKeyId"),
-  });
-  if (!parsed.success) throw new Error("invalid_request");
-
-  const { projectId, apiKeyId } = parsed.data;
-
-  await requireProjectAccess(projectId, userId);
-
-  // Ensure the key belongs to this project
-  const key = await prisma.apiKey.findFirst({
-    where: { id: apiKeyId, projectId },
-    select: { id: true, revokedAt: true },
-  });
-  if (!key) throw new Error("not_found");
-
-  if (!key.revokedAt) {
-    await prisma.apiKey.update({
-      where: { id: apiKeyId },
-      data: { revokedAt: new Date() },
-    });
-  }
 
   revalidatePath(`/console/projects/${projectId}/keys`);
+
+  return {
+    apiKeyId: created.id,
+    prefix,
+    key: fullKey, // show ONCE in UI
+  };
+}
+
+export async function revokeApiKeyAction(input: {
+  projectId: string;
+  apiKeyId: string;
+}) {
+  const { projectId, apiKeyId } = input;
+
+  await requireUserAndProjectAccess(projectId);
+
+  await prisma.apiKey.updateMany({
+    where: { id: apiKeyId, projectId, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+
+  revalidatePath(`/console/projects/${projectId}/keys`);
+  return { ok: true };
+}
+
+export async function rotateApiKeyAction(input: {
+  projectId: string;
+  apiKeyId: string;
+}) {
+  const { projectId, apiKeyId } = input;
+
+  await requireUserAndProjectAccess(projectId);
+
+  const oldKey = await prisma.apiKey.findFirst({
+    where: { id: apiKeyId, projectId },
+    select: { id: true, environmentId: true, name: true, revokedAt: true },
+  });
+  if (!oldKey) throw new Error("not_found");
+
+  const prefix = makePrefix();
+  const secret = makeSecret();
+  const fullKey = `${prefix}_${secret}`;
+
+  // Create new key
+  const created = await prisma.apiKey.create({
+    data: {
+      projectId,
+      environmentId: oldKey.environmentId,
+      name: oldKey.name,
+      prefix,
+      hash: sha256(fullKey),
+      revokedAt: null,
+    },
+    select: { id: true },
+  });
+
+  // Revoke old key (even if already revoked, this is idempotent-ish)
+  await prisma.apiKey.updateMany({
+    where: { id: oldKey.id, projectId, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+
+  revalidatePath(`/console/projects/${projectId}/keys`);
+
+  return {
+    newApiKeyId: created.id,
+    prefix,
+    key: fullKey, // show ONCE in UI
+  };
 }

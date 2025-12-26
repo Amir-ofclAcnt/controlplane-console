@@ -54,7 +54,7 @@ export async function GET(
   // 3) Range (default 24h)
   const url = new URL(req.url);
   const range = parseRange(url.searchParams.get("range"));
-  const hours = range === "6h" ? 6 : 24;
+
 
   // IMPORTANT: include current hour (so UI updates immediately)
   const now = new Date();
