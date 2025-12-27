@@ -5,22 +5,43 @@ import { z } from "zod";
 import { Prisma } from "@prisma/client";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-const QuerySchema = z.object({
-  take: z
+const takeSchema = z
+  .string()
+  .optional()
+  .transform((v) => {
+    const n = v ? Number(v) : 50;
+    if (!Number.isFinite(n)) return 50;
+    return Math.max(1, Math.min(200, n));
+  });
+
+const optionalTrim = () =>
+  z
     .string()
     .optional()
     .transform((v) => {
-      const n = v ? Number(v) : 50;
-      if (!Number.isFinite(n)) return 50;
-      return Math.max(1, Math.min(200, n));
+      const t = v?.trim();
+      return t && t.length > 0 ? t : undefined;
+    });
+
+const QuerySchema = z.object({
+  take: takeSchema,
+  cursor: optionalTrim(), // AuditLog.id
+  actorUserId: optionalTrim(),
+  action: optionalTrim(),
+  targetType: optionalTrim(),
+  targetId: optionalTrim(),
+  q: z
+    .string()
+    .optional()
+    .transform((v) => {
+      const t = v?.trim();
+      return t && t.length > 0 ? t : undefined;
+    })
+    .refine((v) => v === undefined || v.length <= 200, {
+      message: "q must be <= 200 characters",
     }),
-  cursor: z.string().optional(), // AuditLog.id
-  actorUserId: z.string().optional(),
-  action: z.string().optional(),
-  targetType: z.string().optional(),
-  targetId: z.string().optional(),
-  q: z.string().optional(), // search in action/targetType/targetId
 });
 
 function iso(d: Date) {
@@ -84,12 +105,11 @@ export async function GET(
     ...(targetId ? { targetId } : {}),
   };
 
-  if (q && q.trim()) {
-    const needle = q.trim();
+  if (q) {
     where.OR = [
-      { action: { contains: needle, mode: "insensitive" } },
-      { targetType: { contains: needle, mode: "insensitive" } },
-      { targetId: { contains: needle, mode: "insensitive" } },
+      { action: { contains: q, mode: "insensitive" } },
+      { targetType: { contains: q, mode: "insensitive" } },
+      { targetId: { contains: q, mode: "insensitive" } },
     ];
   }
 

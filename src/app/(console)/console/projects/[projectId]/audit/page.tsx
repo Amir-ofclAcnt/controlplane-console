@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import type { ReactNode } from "react";
+import AuditTableClient from "./AuditTableClient";
 
 import { prisma } from "@/lib/db";
 import { auth } from "@/auth";
@@ -135,6 +136,32 @@ export default async function ProjectAuditPage({
           orderBy: [{ name: "asc" }, { email: "asc" }, { id: "asc" }],
         });
 
+  // 2.5) Datalist suggestions for action/targetType (from org audit logs)
+  const [distinctActionsRows, distinctTargetTypesRows] = await Promise.all([
+    prisma.auditLog.findMany({
+      where: { organizationId: project.organizationId },
+      distinct: ["action"],
+      select: { action: true },
+      take: 200,
+    }),
+    prisma.auditLog.findMany({
+      where: { organizationId: project.organizationId },
+      distinct: ["targetType"],
+      select: { targetType: true },
+      take: 200,
+    }),
+  ]);
+
+  const actionOptions = distinctActionsRows
+    .map((r) => r.action)
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+    .sort((a, b) => a.localeCompare(b));
+
+  const targetTypeOptions = distinctTargetTypesRows
+    .map((r) => r.targetType)
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+    .sort((a, b) => a.localeCompare(b));
+
   const h = await headers();
   const host = h.get("host");
   const proto = h.get("x-forwarded-proto") ?? "http";
@@ -185,6 +212,7 @@ export default async function ProjectAuditPage({
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <Badge variant="outline">Newest first</Badge>
           <Badge variant="outline">Cursor pagination</Badge>
+
           {sp.actorUserId ? (
             <Badge variant="outline">Actor: {sp.actorUserId}</Badge>
           ) : null}
@@ -192,7 +220,10 @@ export default async function ProjectAuditPage({
             <Badge variant="outline">Action: {sp.action}</Badge>
           ) : null}
           {sp.targetType ? (
-            <Badge variant="outline">Target: {sp.targetType}</Badge>
+            <Badge variant="outline">TargetType: {sp.targetType}</Badge>
+          ) : null}
+          {sp.targetId ? (
+            <Badge variant="outline">TargetId: {sp.targetId}</Badge>
           ) : null}
           {sp.q ? <Badge variant="outline">Search: {sp.q}</Badge> : null}
         </div>
@@ -208,6 +239,18 @@ export default async function ProjectAuditPage({
         </CardHeader>
 
         <CardContent>
+          {/* Datalists */}
+          <datalist id="audit-actions">
+            {actionOptions.map((a) => (
+              <option key={a} value={a} />
+            ))}
+          </datalist>
+          <datalist id="audit-target-types">
+            {targetTypeOptions.map((t) => (
+              <option key={t} value={t} />
+            ))}
+          </datalist>
+
           <form className="grid gap-3 rounded-xl border p-4 md:grid-cols-6">
             <div className="grid gap-1 md:col-span-2">
               <Label className="text-xs">Search</Label>
@@ -237,6 +280,7 @@ export default async function ProjectAuditPage({
                 name="action"
                 defaultValue={sp.action ?? ""}
                 placeholder="api_key.created"
+                list="audit-actions"
                 className="h-9"
               />
             </div>
@@ -247,6 +291,7 @@ export default async function ProjectAuditPage({
                 name="targetType"
                 defaultValue={sp.targetType ?? ""}
                 placeholder="ApiKey / FeatureFlag"
+                list="audit-target-types"
                 className="h-9"
               />
             </div>

@@ -13,7 +13,7 @@ export default async function ConsoleLayout({
   return (
     <div className="min-h-screen bg-background">
       <div className="flex">
-        <aside className="w-64 border-r min-h-screen p-4">
+        <aside className="w-64 shrink-0 border-r min-h-screen p-4">
           <Link href="/console" className="font-semibold">
             ControlPlane
           </Link>
