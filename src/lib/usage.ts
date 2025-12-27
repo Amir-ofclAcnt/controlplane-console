@@ -19,7 +19,7 @@ export async function bumpUsage(params: {
     environmentId,
     apiKeyId = null,
     status,
-    latencyMs = null,
+    latencyMs,
     eventsIngested = 0,
     at = new Date(),
   } = params;
@@ -56,7 +56,7 @@ export async function bumpUsage(params: {
       requests202,
       requests4xx,
       requests5xx,
-      latencySum,
+      latencySumMs: latencySum,
       latencyCount,
     },
     update: {
@@ -64,7 +64,7 @@ export async function bumpUsage(params: {
       requests202: { increment: requests202 },
       requests4xx: { increment: requests4xx },
       requests5xx: { increment: requests5xx },
-      latencySum: { increment: latencySum },
+      latencySumMs: { increment: latencySum },
       latencyCount: { increment: latencyCount },
     },
   });
