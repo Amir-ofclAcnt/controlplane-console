@@ -1,16 +1,8 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import Logo from "@/components/icons/Logo";
-
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 
 export const runtime = "nodejs";
 
@@ -37,6 +29,9 @@ export default function MarketingLayout({ children }: { children: ReactNode }) {
             >
               <Logo className="h-5 w-5" />
               <span>ControlPlane Console</span>
+              <Badge variant="secondary" className="ml-1">
+                MVP
+              </Badge>
             </Link>
 
             <nav className="hidden items-center gap-4 sm:flex">
@@ -45,6 +40,7 @@ export default function MarketingLayout({ children }: { children: ReactNode }) {
               <NavLink href="/changelog">Changelog</NavLink>
               <NavLink href="/pricing">Pricing</NavLink>
               <NavLink href="/status">Status</NavLink>
+              <NavLink href="/console">Console</NavLink>
             </nav>
           </div>
 
