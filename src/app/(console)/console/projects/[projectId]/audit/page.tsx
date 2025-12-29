@@ -44,17 +44,6 @@ type AuditResponse = {
   nextCursor: string | null;
 };
 
-function fmtTime(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleString(undefined, {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
 function Select({
   name,
   defaultValue,
@@ -73,16 +62,6 @@ function Select({
       {children}
     </select>
   );
-}
-
-function compactJson(v: unknown) {
-  try {
-    const s = JSON.stringify(v);
-    if (!s) return "";
-    return s.length > 120 ? s.slice(0, 117) + "..." : s;
-  } catch {
-    return "";
-  }
 }
 
 export default async function ProjectAuditPage({
@@ -327,55 +306,9 @@ export default async function ProjectAuditPage({
             </div>
           </form>
 
-          {data.items.length === 0 ? (
-            <p className="mt-4 text-sm text-muted-foreground">
-              No audit events yet.
-            </p>
-          ) : (
-            <div className="mt-4 overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-muted-foreground">
-                    <th className="py-2 pr-4">Time</th>
-                    <th className="py-2 pr-4">Actor</th>
-                    <th className="py-2 pr-4">Action</th>
-                    <th className="py-2 pr-4">Target</th>
-                    <th className="py-2 pr-4">Target ID</th>
-                    <th className="py-2 pr-4">Meta</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.items.map((r) => (
-                    <tr key={r.id} className="border-b last:border-0">
-                      <td className="py-2 pr-4 font-mono text-xs">
-                        {fmtTime(r.createdAt)}
-                      </td>
-                      <td className="py-2 pr-4">
-                        <div className="font-mono text-xs">
-                          {r.actor?.name ??
-                            r.actor?.email ??
-                            r.actorUserId ??
-                            "—"}
-                        </div>
-                      </td>
-                      <td className="py-2 pr-4 font-mono text-xs">
-                        {r.action}
-                      </td>
-                      <td className="py-2 pr-4 font-mono text-xs">
-                        {r.targetType}
-                      </td>
-                      <td className="py-2 pr-4 font-mono text-xs">
-                        {r.targetId}
-                      </td>
-                      <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">
-                        {r.metaJson ? compactJson(r.metaJson) : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <div className="mt-4">
+            <AuditTableClient items={data.items} />
+          </div>
 
           <div className="mt-4 flex items-center gap-2">
             {data.nextCursor ? (
