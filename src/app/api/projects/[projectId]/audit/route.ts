@@ -61,7 +61,7 @@ export async function GET(
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  // 2) Authorization: user must belong to org that owns the project
+  // 2) AuthZ: must be org member of this project
   const project = await prisma.project.findFirst({
     where: {
       id: projectId,
@@ -96,9 +96,13 @@ export async function GET(
   const { take, cursor, actorUserId, action, targetType, targetId, q } =
     parsed.data;
 
-  // 4) Filters
+  // 4) Filters (PROJECT-SCOPED)
   const where: Prisma.AuditLogWhereInput = {
     organizationId: project.organizationId,
+
+    // IMPORTANT: project-scoped list (LaunchDarkly feel)
+    projectId: project.id,
+
     ...(actorUserId ? { actorUserId } : {}),
     ...(action ? { action } : {}),
     ...(targetType ? { targetType } : {}),
@@ -123,18 +127,15 @@ export async function GET(
       id: true,
       createdAt: true,
       organizationId: true,
+      projectId: true,
+      environmentId: true,
       actorUserId: true,
       action: true,
       targetType: true,
       targetId: true,
       metaJson: true,
       actor: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          image: true,
-        },
+        select: { id: true, name: true, email: true, image: true },
       },
     },
   });
@@ -146,10 +147,7 @@ export async function GET(
   return NextResponse.json({
     projectId,
     organizationId: project.organizationId,
-    items: items.map((r) => ({
-      ...r,
-      createdAt: iso(r.createdAt),
-    })),
+    items: items.map((r) => ({ ...r, createdAt: iso(r.createdAt) })),
     nextCursor,
   });
 }

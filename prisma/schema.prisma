@@ -104,8 +104,9 @@ model Project {
   requestLogs  RequestLog[]
   events       Event[]
 
-  flags    FeatureFlag[]
-  segments Segment[]
+  flags     FeatureFlag[]
+  segments  Segment[]
+  auditLogs AuditLog[]
 
   @@unique([organizationId, slug])
   @@index([organizationId])
@@ -117,7 +118,7 @@ model Environment {
 
   // Display name can change; slug should be stable (dev/staging/prod)
   name String
-  slug String? // Migration 1: optional; later make required and unique per project
+  slug String // Migration 1: optional; later make required and unique per project
 
   createdAt DateTime @default(now())
 
@@ -131,9 +132,11 @@ model Environment {
   apiKeys     ApiKey[]
   requestLogs RequestLog[]
   events      Event[]
+  auditLogs   AuditLog[]
 
   // Keep your existing uniqueness for now (safe); later you can switch to unique([projectId, slug])
   @@unique([projectId, name])
+  @@unique([projectId, slug])
   @@index([projectId])
 }
 
@@ -223,20 +226,31 @@ model Event {
 }
 
 model AuditLog {
-  id             String   @id @default(cuid())
+  id             String @id @default(cuid())
   organizationId String
-  actorUserId    String?
-  action         String
-  targetType     String
-  targetId       String
-  metaJson       Json?
-  createdAt      DateTime @default(now())
+
+  // NEW scope columns
+  projectId     String?
+  environmentId String?
+
+  actorUserId String?
+  action      String
+  targetType  String
+  targetId    String
+  metaJson    Json?
+  createdAt   DateTime @default(now())
 
   actor        User?        @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
+  // NEW relations
+  project     Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  environment Environment? @relation(fields: [environmentId], references: [id], onDelete: SetNull)
+
   @@index([organizationId, createdAt])
   @@index([actorUserId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([environmentId, createdAt])
 }
 
 enum OrgRole {

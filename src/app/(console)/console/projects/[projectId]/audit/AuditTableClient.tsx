@@ -4,6 +4,9 @@ import * as React from "react";
 import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
+import { CopyButton } from "@/components/app/CopyButton";
+import CopyCode from "@/components/app/CopyCode";
+
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -19,7 +22,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import CopyCode from "@/components/app/CopyCode";
 
 type AuditActor = {
   id?: string;
@@ -62,7 +64,13 @@ function prettyJson(value: unknown) {
   }
 }
 
-export default function AuditTableClient({ items }: { items: AuditItem[] }) {
+export default function AuditTableClient({
+  projectId,
+  items,
+}: {
+  projectId: string;
+  items: AuditItem[];
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const sp = useSearchParams();
@@ -72,31 +80,124 @@ export default function AuditTableClient({ items }: { items: AuditItem[] }) {
   const [open, setOpen] = React.useState(false);
   const [selected, setSelected] = React.useState<AuditItem | null>(null);
 
-  // Open dialog if URL contains ?audit=<id>
+  // Single canonical helper for replacing the URL querystring
+  const replaceSearchParams = React.useCallback(
+    (
+      next: URLSearchParams,
+      opts: {
+        scroll?: boolean;
+      } = { scroll: false }
+    ) => {
+      const qs = next.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, opts);
+    },
+    [router, pathname]
+  );
+
+  // Set or clear the ?audit= param
+  // Optionally drop cursor when opening a row (deep-link should not keep pagination cursor)
+  const setAuditParam = React.useCallback(
+    (
+      id: string | null,
+      opts?: {
+        dropCursor?: boolean;
+      }
+    ) => {
+      const next = new URLSearchParams(sp.toString());
+
+      if (opts?.dropCursor) next.delete("cursor");
+
+      if (id) next.set("audit", id);
+      else next.delete("audit");
+
+      replaceSearchParams(next);
+    },
+    [sp, replaceSearchParams]
+  );
+
+  const onOpenItem = React.useCallback(
+    (item: AuditItem) => {
+      setSelected(item);
+      setOpen(true);
+      setAuditParam(item.id, { dropCursor: true });
+    },
+    [setAuditParam]
+  );
+
+  // When URL changes: open dialog if ?audit=<id>.
+  // If not in current page items, fetch it (deep-link robustness).
   React.useEffect(() => {
-    if (!selectedId) return;
-    const found = items.find((x) => x.id === selectedId) ?? null;
-    setSelected(found);
-    setOpen(Boolean(found));
-  }, [selectedId, items]);
+    let cancelled = false;
+
+    async function run() {
+      if (!selectedId) {
+        setSelected(null);
+        setOpen(false);
+        return;
+      }
+
+      // 1) Try local list first
+      const found = items.find((x) => x.id === selectedId) ?? null;
+      if (found) {
+        setSelected(found);
+        setOpen(true);
+        return;
+      }
+
+      // 2) Not in current page -> fetch single item
+      try {
+        const res = await fetch(
+          `/api/projects/${projectId}/audit/${encodeURIComponent(selectedId)}`,
+          { cache: "no-store", credentials: "include" }
+        );
+
+        if (cancelled) return;
+
+        if (res.status === 404) {
+          // invalid link or not accessible: close & remove param
+          setSelected(null);
+          setOpen(false);
+          setAuditParam(null);
+          return;
+        }
+
+        if (!res.ok) {
+          // keep URL, but don't crash UI
+          setSelected(null);
+          setOpen(false);
+          return;
+        }
+
+        const json = (await res.json()) as { item: AuditItem };
+        setSelected(json.item);
+        setOpen(true);
+      } catch {
+        if (cancelled) return;
+        setSelected(null);
+        setOpen(false);
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, items, projectId, setAuditParam]);
 
   const metaPretty = React.useMemo(
     () => (selected ? prettyJson(selected.metaJson) : ""),
     [selected]
   );
 
-  function setAuditParam(id: string | null) {
-    const next = new URLSearchParams(sp.toString());
-    if (id) next.set("audit", id);
-    else next.delete("audit");
-    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
-  }
+  const permalink = React.useMemo(() => {
+    if (!selected) return "";
+    if (typeof window === "undefined") return "";
 
-  function onRowClick(item: AuditItem) {
-    setSelected(item);
-    setOpen(true);
-    setAuditParam(item.id);
-  }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("cursor");
+    url.searchParams.set("audit", selected.id);
+    return url.toString();
+  }, [selected]);
 
   return (
     <div className="rounded-xl border">
@@ -106,7 +207,7 @@ export default function AuditTableClient({ items }: { items: AuditItem[] }) {
             <TableHead className="w-[170px]">When</TableHead>
             <TableHead className="w-[220px]">Actor</TableHead>
             <TableHead>Action</TableHead>
-            <TableHead className="w-[160px]">Target</TableHead>
+            <TableHead className="w-40">Target</TableHead>
             <TableHead className="w-[120px] text-right">Details</TableHead>
           </TableRow>
         </TableHeader>
@@ -124,11 +225,12 @@ export default function AuditTableClient({ items }: { items: AuditItem[] }) {
           ) : (
             items.map((it) => {
               const actorName = it.actor?.name || it.actor?.email || "—";
+
               return (
                 <TableRow
                   key={it.id}
                   className="cursor-pointer hover:bg-muted/40"
-                  onClick={() => onRowClick(it)}
+                  onClick={() => onOpenItem(it)}
                 >
                   <TableCell className="text-sm text-muted-foreground">
                     {formatWhen(it.createdAt)}
@@ -178,7 +280,7 @@ export default function AuditTableClient({ items }: { items: AuditItem[] }) {
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        onRowClick(it);
+                        onOpenItem(it);
                       }}
                     >
                       View
@@ -191,15 +293,17 @@ export default function AuditTableClient({ items }: { items: AuditItem[] }) {
         </TableBody>
       </Table>
 
-      {/* One dialog instance, driven by selected item */}
       <Dialog
         open={open}
         onOpenChange={(v) => {
           setOpen(v);
-          if (!v) setAuditParam(null);
+          if (!v) {
+            setSelected(null);
+            setAuditParam(null);
+          }
         }}
       >
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Audit entry</DialogTitle>
           </DialogHeader>
@@ -210,7 +314,7 @@ export default function AuditTableClient({ items }: { items: AuditItem[] }) {
             </div>
           ) : (
             <div className="space-y-5">
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-2 sm:*:min-w-0">
                 <div>
                   <div className="text-xs text-muted-foreground">Audit ID</div>
                   <div className="mt-1">
@@ -252,6 +356,7 @@ export default function AuditTableClient({ items }: { items: AuditItem[] }) {
                       <span className="text-muted-foreground">Type: </span>
                       {selected.targetType}
                     </div>
+
                     <div>
                       <div className="text-xs text-muted-foreground">
                         Target ID
@@ -266,7 +371,7 @@ export default function AuditTableClient({ items }: { items: AuditItem[] }) {
                 <div className="sm:col-span-2">
                   <div className="text-xs text-muted-foreground">Permalink</div>
                   <div className="mt-1">
-                    <CopyCode value={`${pathname}?audit=${selected.id}`} />
+                    <CopyCode value={permalink} />
                   </div>
                 </div>
               </div>
@@ -275,14 +380,16 @@ export default function AuditTableClient({ items }: { items: AuditItem[] }) {
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <div className="text-sm font-medium">metaJson</div>
                   {metaPretty ? (
-                    <div className="w-[360px] max-w-full">
-                      <CopyCode value={metaPretty} />
-                    </div>
+                    <CopyButton
+                      value={metaPretty}
+                      label="Copy JSON"
+                      className="shrink-0"
+                    />
                   ) : null}
                 </div>
 
                 {metaPretty ? (
-                  <pre className="max-h-[360px] overflow-auto rounded-lg border bg-muted/30 p-3 text-xs leading-relaxed">
+                  <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border bg-muted/30 p-3 text-xs leading-relaxed">
                     {metaPretty}
                   </pre>
                 ) : (

@@ -1,23 +1,16 @@
 "use client";
 
 import * as React from "react";
-import { Button } from "@/components/ui/button";
+import { CopyButton } from "@/components/app/CopyButton";
 
 export default function CopyCode({ value }: { value: string }) {
-  const [copied, setCopied] = React.useState(false);
-
-  async function onCopy() {
-    await navigator.clipboard.writeText(value);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
-  }
-
   return (
-    <div className="flex items-center gap-2 rounded-lg border bg-muted/40 p-3">
-      <code className="flex-1 overflow-x-auto font-mono text-xs">{value}</code>
-      <Button type="button" variant="outline" size="sm" onClick={onCopy}>
-        {copied ? "Copied" : "Copy"}
-      </Button>
+    <div className="flex w-full min-w-0 items-center gap-2 rounded-lg border bg-muted/40 p-3">
+      <code className="min-w-0 flex-1 truncate font-mono text-xs" title={value}>
+        {value}
+      </code>
+
+      <CopyButton value={value} className="shrink-0" />
     </div>
   );
 }

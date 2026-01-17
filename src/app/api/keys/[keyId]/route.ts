@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/auth";
 import { prisma } from "@/lib/db";
+import { writeAudit } from "@/lib/audit";
 
 export const runtime = "nodejs";
 
-// DELETE /api/keys/:keyId  -> revoke (sets revokedAt)
+type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
 export async function DELETE(
   _req: Request,
   ctx: { params: Promise<{ keyId: string }> }
@@ -14,12 +16,10 @@ export async function DELETE(
 
   const session = await getServerSession(authOptions);
   const userId = session?.userId;
-  if (!userId) {
+  if (!userId)
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
 
-  // Load key + org for authorization
-  const apiKey = await prisma.apiKey.findUnique({
+  const key = await prisma.apiKey.findUnique({
     where: { id: keyId },
     select: {
       id: true,
@@ -27,78 +27,71 @@ export async function DELETE(
       prefix: true,
       revokedAt: true,
       environmentId: true,
-      project: {
-        select: {
-          id: true,
-          organizationId: true,
-        },
-      },
+      projectId: true,
+      project: { select: { organizationId: true } },
     },
   });
+  if (!key) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
-  if (!apiKey) {
-    return NextResponse.json({ error: "not_found" }, { status: 404 });
-  }
-
-  // Membership check via org
   const member = await prisma.orgMember.findFirst({
-    where: {
-      organizationId: apiKey.project.organizationId,
-      userId,
-    },
+    where: { organizationId: key.project.organizationId, userId },
     select: { role: true },
   });
-
-  if (!member) {
+  if (!member)
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  }
 
-  // Idempotent revoke
-  if (apiKey.revokedAt) {
+  // idempotent
+  if (key.revokedAt) {
     return NextResponse.json(
       {
         apiKey: {
-          id: apiKey.id,
-          name: apiKey.name,
-          prefix: apiKey.prefix,
-          revokedAt: apiKey.revokedAt,
-          environmentId: apiKey.environmentId,
-          projectId: apiKey.project.id,
+          id: key.id,
+          name: key.name,
+          prefix: key.prefix,
+          revokedAt: key.revokedAt,
+          environmentId: key.environmentId,
+          projectId: key.projectId,
         },
       },
       { status: 200 }
     );
   }
 
-  const updated = await prisma.apiKey.update({
-    where: { id: keyId },
-    data: { revokedAt: new Date() },
-    select: {
-      id: true,
-      name: true,
-      prefix: true,
-      revokedAt: true,
-      lastUsedAt: true,
-      environmentId: true,
-      projectId: true,
-      createdAt: true,
-    },
-  });
-
-  await prisma.auditLog.create({
-    data: {
-      organizationId: apiKey.project.organizationId,
-      actorUserId: userId,
-      action: "apikey.revoke",
-      targetType: "apiKey",
-      targetId: updated.id,
-      metaJson: {
-        projectId: updated.projectId,
-        environmentId: updated.environmentId,
-        prefix: updated.prefix,
-        name: updated.name,
+  const updated = await prisma.$transaction(async (tx: Tx) => {
+    const u = await tx.apiKey.update({
+      where: { id: keyId },
+      data: { revokedAt: new Date() },
+      select: {
+        id: true,
+        name: true,
+        prefix: true,
+        revokedAt: true,
+        lastUsedAt: true,
+        environmentId: true,
+        projectId: true,
+        createdAt: true,
       },
-    },
+    });
+
+    await writeAudit(tx, {
+      organizationId: key.project.organizationId,
+      actorUserId: userId,
+
+      projectId: u.projectId,
+      environmentId: u.environmentId,
+
+      action: "api_key.revoked",
+      kind: "api_key",
+      targetType: "api_key",
+      targetId: u.id,
+      metaJson: {
+        apiKeyId: u.id,
+        name: u.name ?? null,
+        prefix: u.prefix ?? null,
+      },
+    });
+
+    return u;
   });
 
   return NextResponse.json({ apiKey: updated }, { status: 200 });

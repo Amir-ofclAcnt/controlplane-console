@@ -4,8 +4,10 @@ import { authOptions } from "@/auth";
 import { prisma } from "@/lib/db";
 import crypto from "crypto";
 import { z } from "zod";
+import { writeAudit } from "@/lib/audit";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
@@ -29,10 +31,12 @@ export async function POST(
 
   const session = await getServerSession(authOptions);
   const userId = session?.userId;
-  if (!userId)
+  if (!userId) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
 
-  const body = await req.json().catch(() => null);
+  // Parse body safely (allow empty body -> defaults)
+  const body = await req.json().catch(() => ({}));
   const parsed = RotateSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
@@ -41,6 +45,7 @@ export async function POST(
     );
   }
 
+  // Load existing key + org
   const oldKey = await prisma.apiKey.findUnique({
     where: { id: keyId },
     select: {
@@ -50,18 +55,23 @@ export async function POST(
       revokedAt: true,
       projectId: true,
       environmentId: true,
-      project: { select: { organizationId: true } },
+      project: { select: { id: true, organizationId: true } },
     },
   });
-  if (!oldKey)
-    return NextResponse.json({ error: "not_found" }, { status: 404 });
 
+  if (!oldKey) {
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
+  }
+
+  // Authz: must be org member
   const member = await prisma.orgMember.findFirst({
     where: { organizationId: oldKey.project.organizationId, userId },
     select: { role: true },
   });
-  if (!member)
+
+  if (!member) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
 
   if (!oldKey.environmentId) {
     return NextResponse.json(
@@ -70,11 +80,13 @@ export async function POST(
     );
   }
 
+  // Generate new secret (only returned once)
   const prefix = `cp_${randomToken(6)}`;
   const secret = `cpk_${randomToken(24)}`;
   const hash = sha256(secret);
 
   const result = await prisma.$transaction(async (tx: Tx) => {
+    // Create new key
     const newKey = await tx.apiKey.create({
       data: {
         projectId: oldKey.projectId,
@@ -96,8 +108,8 @@ export async function POST(
       },
     });
 
+    // Optionally revoke old key
     let revokedOldAt: Date | null = null;
-
     if (parsed.data.revokeOld && !oldKey.revokedAt) {
       const revoked = await tx.apiKey.update({
         where: { id: oldKey.id },
@@ -107,30 +119,29 @@ export async function POST(
       revokedOldAt = revoked.revokedAt;
     }
 
-    await tx.auditLog.create({
-      data: {
-        organizationId: oldKey.project.organizationId,
-        actorUserId: userId,
-        action: "apikey.rotate",
-        targetType: "apiKey",
-        targetId: newKey.id,
-        metaJson: {
-          projectId: oldKey.projectId,
-          environmentId: oldKey.environmentId,
-          old: { id: oldKey.id, prefix: oldKey.prefix },
-          new: { id: newKey.id, prefix: newKey.prefix },
-          revokeOld: parsed.data.revokeOld,
-          revokedOldAt,
-        },
+    // Audit (use your helper for consistency)
+    await writeAudit(tx, {
+      organizationId: oldKey.project.organizationId,
+      projectId: oldKey.projectId,
+      environmentId: oldKey.environmentId,
+      actorUserId: userId,
+      action: "api_key.rotate",
+      targetType: "ApiKey",
+      targetId: newKey.id,
+      metaJson: {
+        old: { id: oldKey.id, prefix: oldKey.prefix },
+        new: { id: newKey.id, prefix: newKey.prefix },
+        revokeOld: parsed.data.revokeOld,
+        revokedOldAt,
       },
     });
 
-    return newKey;
+    return { newKey, revokedOldAt };
   });
 
   return NextResponse.json(
     {
-      apiKey: result,
+      apiKey: result.newKey,
       secret,
       authorizationHeader: `Authorization: Bearer ${secret}`,
     },

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/auth";
 import { prisma } from "@/lib/db";
+import { writeAudit } from "@/lib/audit";
 
 export const runtime = "nodejs";
 

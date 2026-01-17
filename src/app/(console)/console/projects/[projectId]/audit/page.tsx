@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { headers } from "next/headers";
 import type { ReactNode } from "react";
-import AuditTableClient from "./AuditTableClient";
+import { z } from "zod";
+import { Prisma } from "@prisma/client";
 
+import AuditTableClient from "./AuditTableClient";
 import { prisma } from "@/lib/db";
 import { auth } from "@/auth";
 
@@ -34,6 +35,8 @@ type AuditResponse = {
     targetType: string;
     targetId: string;
     metaJson: unknown | null;
+    projectId: string | null;
+    environmentId: string | null;
     actor: {
       id: string;
       name: string | null;
@@ -43,6 +46,43 @@ type AuditResponse = {
   }>;
   nextCursor: string | null;
 };
+
+const takeSchema = z
+  .string()
+  .optional()
+  .transform((v) => {
+    const n = v ? Number(v) : 50;
+    if (!Number.isFinite(n)) return 50;
+    return Math.max(1, Math.min(200, n));
+  });
+
+const optionalTrim = () =>
+  z
+    .string()
+    .optional()
+    .transform((v) => {
+      const t = v?.trim();
+      return t && t.length > 0 ? t : undefined;
+    });
+
+const QuerySchema = z.object({
+  take: takeSchema,
+  cursor: optionalTrim(),
+  actorUserId: optionalTrim(),
+  action: optionalTrim(),
+  targetType: optionalTrim(),
+  targetId: optionalTrim(),
+  q: z
+    .string()
+    .optional()
+    .transform((v) => {
+      const t = v?.trim();
+      return t && t.length > 0 ? t : undefined;
+    })
+    .refine((v) => v === undefined || v.length <= 200, {
+      message: "q must be <= 200 characters",
+    }),
+});
 
 function Select({
   name,
@@ -64,6 +104,10 @@ function Select({
   );
 }
 
+function iso(d: Date) {
+  return d.toISOString();
+}
+
 export default async function ProjectAuditPage({
   params,
   searchParams,
@@ -77,31 +121,52 @@ export default async function ProjectAuditPage({
     targetType?: string;
     targetId?: string;
     q?: string;
+    audit?: string; // deep link param (used by client dialog); ignored server-side
   }>;
 }) {
   const { projectId } = await params;
   const sp = (await searchParams) ?? {};
 
-  // 1) Gate page + find orgId
+  // 1) Auth gate
   const session = await auth();
   const userId = session?.userId;
   if (!userId) notFound();
 
+  // 2) AuthZ: project must be accessible
   const project = await prisma.project.findFirst({
-    where: {
-      id: projectId,
-      organization: { members: { some: { userId } } },
-    },
+    where: { id: projectId, organization: { members: { some: { userId } } } },
     select: { id: true, organizationId: true },
   });
-
   if (!project) notFound();
 
-  // 2) Build "members" dropdown: OrgMember -> userIds -> Users
+  // Optional debug (remove later)
+  console.log("AUDIT PAGE projectId:", projectId);
+  console.log("AUDIT PAGE orgId:", project.organizationId);
+
+  // 3) Parse query params (server-side safety)
+  const parsed = QuerySchema.safeParse({
+    take: sp.take,
+    cursor: sp.cursor,
+    actorUserId: sp.actorUserId,
+    action: sp.action,
+    targetType: sp.targetType,
+    targetId: sp.targetId,
+    q: sp.q,
+  });
+
+  if (!parsed.success) {
+    // In prod you might prefer to ignore invalid params.
+    throw new Error(`Invalid query: ${JSON.stringify(parsed.error.flatten())}`);
+  }
+
+  const { take, cursor, actorUserId, action, targetType, targetId, q } =
+    parsed.data;
+
+  // 4) Members dropdown
   const orgMembers = await prisma.orgMember.findMany({
     where: { organizationId: project.organizationId },
     select: { userId: true },
-    orderBy: { userId: "asc" }, // safe + stable
+    orderBy: { userId: "asc" },
   });
 
   const memberUserIds = Array.from(new Set(orgMembers.map((m) => m.userId)));
@@ -115,16 +180,16 @@ export default async function ProjectAuditPage({
           orderBy: [{ name: "asc" }, { email: "asc" }, { id: "asc" }],
         });
 
-  // 2.5) Datalist suggestions for action/targetType (from org audit logs)
+  // 5) Datalist suggestions (IMPORTANT: project-scoped)
   const [distinctActionsRows, distinctTargetTypesRows] = await Promise.all([
     prisma.auditLog.findMany({
-      where: { organizationId: project.organizationId },
+      where: { organizationId: project.organizationId, projectId: project.id },
       distinct: ["action"],
       select: { action: true },
       take: 200,
     }),
     prisma.auditLog.findMany({
-      where: { organizationId: project.organizationId },
+      where: { organizationId: project.organizationId, projectId: project.id },
       distinct: ["targetType"],
       select: { targetType: true },
       take: 200,
@@ -141,12 +206,57 @@ export default async function ProjectAuditPage({
     .filter((v): v is string => typeof v === "string" && v.length > 0)
     .sort((a, b) => a.localeCompare(b));
 
-  const h = await headers();
-  const host = h.get("host");
-  const proto = h.get("x-forwarded-proto") ?? "http";
-  const cookie = h.get("cookie") ?? "";
+  // 6) Prisma filters (IMPORTANT: project-scoped list)
+  const where: Prisma.AuditLogWhereInput = {
+    organizationId: project.organizationId,
+    projectId: project.id,
+    ...(actorUserId ? { actorUserId } : {}),
+    ...(action ? { action } : {}),
+    ...(targetType ? { targetType } : {}),
+    ...(targetId ? { targetId } : {}),
+  };
 
-  // 3) Build querystring to API
+  if (q) {
+    where.OR = [
+      { action: { contains: q, mode: "insensitive" } },
+      { targetType: { contains: q, mode: "insensitive" } },
+      { targetId: { contains: q, mode: "insensitive" } },
+    ];
+  }
+
+  // 7) Query (newest first) + cursor pagination
+  const rows = await prisma.auditLog.findMany({
+    where,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: take + 1,
+    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    select: {
+      id: true,
+      createdAt: true,
+      organizationId: true,
+      actorUserId: true,
+      action: true,
+      targetType: true,
+      targetId: true,
+      metaJson: true,
+      projectId: true,
+      environmentId: true,
+      actor: { select: { id: true, name: true, email: true, image: true } },
+    },
+  });
+
+  const hasMore = rows.length > take;
+  const list = hasMore ? rows.slice(0, take) : rows;
+  const nextCursor = hasMore ? list[list.length - 1]?.id ?? null : null;
+
+  const data: AuditResponse = {
+    projectId,
+    organizationId: project.organizationId,
+    items: list.map((r) => ({ ...r, createdAt: iso(r.createdAt) })),
+    nextCursor,
+  };
+
+  // 8) Preserve filters for "Load more" (and preserve ?audit deep-link)
   const qs = new URLSearchParams();
   qs.set("take", sp.take?.trim() ? sp.take : "50");
   if (sp.cursor) qs.set("cursor", sp.cursor);
@@ -155,16 +265,7 @@ export default async function ProjectAuditPage({
   if (sp.targetType) qs.set("targetType", sp.targetType);
   if (sp.targetId) qs.set("targetId", sp.targetId);
   if (sp.q) qs.set("q", sp.q);
-
-  const res = await fetch(
-    `${proto}://${host}/api/projects/${projectId}/audit?${qs.toString()}`,
-    { headers: { cookie }, cache: "no-store" }
-  );
-
-  if (res.status === 404) notFound();
-  if (!res.ok) throw new Error(`Failed to load audit: ${res.status}`);
-
-  const data = (await res.json()) as AuditResponse;
+  if (sp.audit) qs.set("audit", sp.audit);
 
   const nextQs = new URLSearchParams(qs);
   if (data.nextCursor) nextQs.set("cursor", data.nextCursor);
@@ -176,7 +277,7 @@ export default async function ProjectAuditPage({
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Audit</h1>
             <p className="text-sm text-muted-foreground">
-              Organization audit events (scoped by this project’s org).
+              Project-scoped audit events (within your organization).
             </p>
           </div>
 
@@ -218,7 +319,6 @@ export default async function ProjectAuditPage({
         </CardHeader>
 
         <CardContent>
-          {/* Datalists */}
           <datalist id="audit-actions">
             {actionOptions.map((a) => (
               <option key={a} value={a} />
@@ -258,7 +358,7 @@ export default async function ProjectAuditPage({
               <Input
                 name="action"
                 defaultValue={sp.action ?? ""}
-                placeholder="api_key.created"
+                placeholder="snapshot.publish"
                 list="audit-actions"
                 className="h-9"
               />
@@ -269,7 +369,7 @@ export default async function ProjectAuditPage({
               <Input
                 name="targetType"
                 defaultValue={sp.targetType ?? ""}
-                placeholder="ApiKey / FeatureFlag"
+                placeholder="environment"
                 list="audit-target-types"
                 className="h-9"
               />
@@ -307,7 +407,7 @@ export default async function ProjectAuditPage({
           </form>
 
           <div className="mt-4">
-            <AuditTableClient items={data.items} />
+            <AuditTableClient projectId={projectId} items={data.items} />
           </div>
 
           <div className="mt-4 flex items-center gap-2">

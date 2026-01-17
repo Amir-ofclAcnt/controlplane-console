@@ -4,8 +4,11 @@ import { authOptions } from "@/auth";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
 import crypto from "crypto";
+import { writeAudit } from "@/lib/audit";
 
 export const runtime = "nodejs";
+
+type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
 const CreateKeySchema = z.object({
   name: z.string().min(2).max(80),
@@ -27,22 +30,16 @@ async function requireSessionUserId() {
 }
 
 async function requireProjectAndMembership(projectId: string, userId: string) {
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
+  const project = await prisma.project.findFirst({
+    where: {
+      id: projectId,
+      organization: { members: { some: { userId } } },
+    },
     select: { id: true, organizationId: true },
   });
 
   if (!project) {
     return { ok: false as const, status: 404 as const, error: "not_found" };
-  }
-
-  const member = await prisma.orgMember.findFirst({
-    where: { organizationId: project.organizationId, userId },
-    select: { role: true },
-  });
-
-  if (!member) {
-    return { ok: false as const, status: 403 as const, error: "forbidden" };
   }
 
   return { ok: true as const, project };
@@ -105,7 +102,7 @@ export async function GET(
       projectId,
       environmentId: envId,
     },
-    orderBy: { createdAt: "desc" },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     select: {
       id: true,
       name: true,
@@ -114,10 +111,12 @@ export async function GET(
       revokedAt: true,
       lastUsedAt: true,
       environmentId: true,
+      projectId: true,
+      createdByUserId: true,
     },
   });
 
-  return NextResponse.json({ apiKeys });
+  return NextResponse.json({ apiKeys }, { status: 200 });
 }
 
 // POST /api/projects/:projectId/keys
@@ -158,14 +157,14 @@ export async function POST(
   }
 
   // Secret shown once. Hash stored only.
-  const prefix = `cp_${randomToken(6)}`; // public identifier
-  const secret = `cpk_${randomToken(24)}`; // returned once
+  const prefix = `cp_${randomToken(6)}`;
+  const secret = `cpk_${randomToken(24)}`;
   const hash = sha256(secret);
 
-  try {
-    const apiKey = await prisma.apiKey.create({
+  const created = await prisma.$transaction(async (tx: Tx) => {
+    const apiKey = await tx.apiKey.create({
       data: {
-        projectId,
+        projectId: authz.project.id,
         environmentId: envCheck.env.id,
         name: parsed.data.name,
         prefix,
@@ -180,40 +179,41 @@ export async function POST(
         revokedAt: true,
         lastUsedAt: true,
         environmentId: true,
+        projectId: true,
       },
     });
 
-    await prisma.auditLog.create({
-      data: {
-        organizationId: authz.project.organizationId,
-        actorUserId: userId,
-        action: "apikey.create",
-        targetType: "apiKey",
-        targetId: apiKey.id,
-        metaJson: {
-          projectId,
-          environmentId: envCheck.env.id,
-          envSlug: envCheck.env.slug,
-          prefix: apiKey.prefix,
-          name: apiKey.name,
+    await writeAudit(tx, {
+      organizationId: authz.project.organizationId,
+      projectId: authz.project.id,
+      environmentId: envCheck.env.id,
+      actorUserId: userId,
+      action: "api_key.created",
+      targetType: "api_key",
+      targetId: apiKey.id,
+      metaJson: {
+        projectId: authz.project.id,
+        environmentId: envCheck.env.id,
+        apiKeyId: apiKey.id,
+        name: apiKey.name ?? null,
+        prefix: apiKey.prefix,
+        environment: {
+          id: envCheck.env.id,
+          slug: envCheck.env.slug,
+          name: envCheck.env.name,
         },
       },
     });
 
-    return NextResponse.json(
-      {
-        apiKey,
-        secret,
-        authorizationHeader: `Authorization: Bearer ${secret}`,
-      },
-      { status: 201 }
-    );
-  } catch (err: unknown) {
-    // If the prefix unique constraint ever collides, retry once (rare but possible)
-    const msg = err instanceof Error ? err.message : "Internal error";
-    return NextResponse.json(
-      { error: "internal_error", message: msg },
-      { status: 500 }
-    );
-  }
+    return apiKey;
+  });
+
+  return NextResponse.json(
+    {
+      apiKey: created,
+      secret,
+      authorizationHeader: `Authorization: Bearer ${secret}`,
+    },
+    { status: 201 }
+  );
 }

@@ -98,6 +98,8 @@ export async function POST(
     await tx.auditLog.create({
       data: {
         organizationId: env.project.organizationId,
+        projectId: env.projectId,
+        environmentId,
         actorUserId: userId,
         action: "snapshot.publish",
         targetType: "environment",
